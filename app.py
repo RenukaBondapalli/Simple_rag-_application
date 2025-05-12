@@ -5,41 +5,94 @@ from langchain.vectorstores import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import TextLoader
 from langchain.chains import RetrievalQA
-from werkzeug.utils import secure_filename
 import os
 
-# Set API key
-os.environ["GOOGLE_API_KEY"] = "AIzaSyA7YdIMRXPIlHfPSsn3vN3ZkiffBQhhEy0"  # Replace with your real Gemini Flash API key
+# Set Gemini API key from environment
+os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY", "AIzaSyA7YdIMRXPIlHfPSsn3vN3ZkiffBQhhEy0")  # Replace or use env var
 
-# Config
-UPLOAD_FOLDER = "uploads"
-CHROMA_DB_DIR = "./chroma_db"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Load document and build vector index ONCE
+loader = TextLoader("dat.txt")
+documents = loader.load()
+splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+docs = splitter.split_documents(documents)
 
-app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-
-# Load embedding model once
 embedding = HuggingFaceEmbeddings(model_name="BAAI/bge-large-en")
+vectordb = Chroma.from_documents(docs, embedding)
 
-# HTML template
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
+qa = RetrievalQA.from_chain_type(llm=llm, retriever=vectordb.as_retriever())
+
+# Flask app
+app = Flask(__name__)
+
+# HTML Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>RAG Web App</title>
+    <title>Chat with Document</title>
+    <style>
+        body {
+            background-color: #f4f6f8;
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        .chatbox {
+            max-width: 700px;
+            margin: auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        h2 {
+            color: #333;
+        }
+        .message {
+            margin-bottom: 15px;
+        }
+        .user {
+            color: #1a73e8;
+            font-weight: bold;
+        }
+        .bot {
+            color: #0b8043;
+            font-weight: bold;
+        }
+        .response {
+            background-color: #eef6f1;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        input[type="text"] {
+            width: 80%;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        input[type="submit"] {
+            background-color: #1a73e8;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            margin-left: 10px;
+            cursor: pointer;
+        }
+    </style>
 </head>
 <body>
-    <h2>Upload a .txt file and ask a question</h2>
-    <form method="POST" enctype="multipart/form-data">
-        <input type="file" name="file" required><br><br>
-        <input type="text" name="question" placeholder="Ask a question..." size="50" required><br><br>
-        <input type="submit" value="Submit">
-    </form>
-    {% if answer %}
-        <h3>Answer:</h3>
-        <p>{{ answer }}</p>
-    {% endif %}
+    <div class="chatbox">
+        <h2>📘 Ask a question about the document</h2>
+        <form method="POST">
+            <input type="text" name="question" placeholder="Type your question here..." required>
+            <input type="submit" value="Ask">
+        </form>
+        {% if question and answer %}
+            <div class="message"><span class="user">You:</span> {{ question }}</div>
+            <div class="message"><span class="bot">Bot:</span> <div class="response">{{ answer }}</div></div>
+        {% endif %}
+    </div>
 </body>
 </html>
 """
@@ -47,31 +100,14 @@ HTML_TEMPLATE = """
 @app.route("/", methods=["GET", "POST"])
 def index():
     answer = None
+    question = None
     if request.method == "POST":
-        file = request.files["file"]
         question = request.form["question"]
-        if file and question:
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-            file.save(filepath)
-
-            # Load and split
-            loader = TextLoader(filepath)
-            documents = loader.load()
-            splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-            docs = splitter.split_documents(documents)
-
-            # Vector DB
-            vectordb = Chroma.from_documents(docs, embedding, persist_directory=CHROMA_DB_DIR)
-
-            # Gemini LLM
-            llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
-
-            # RAG
-            qa = RetrievalQA.from_chain_type(llm=llm, retriever=vectordb.as_retriever())
+        try:
             answer = qa.run(question)
-
-    return render_template_string(HTML_TEMPLATE, answer=answer)
+        except Exception as e:
+            answer = f"Error: {str(e)}"
+    return render_template_string(HTML_TEMPLATE, answer=answer, question=question)
 
 if __name__ == "__main__":
     app.run(debug=True)
