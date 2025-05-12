@@ -48,41 +48,30 @@ HTML_TEMPLATE = """
 def index():
     answer = None
     if request.method == "POST":
-        try:
-            file = request.files["file"]
-            question = request.form["question"]
-            if file and question:
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-                file.save(filepath)
+        file = request.files["file"]
+        question = request.form["question"]
+        if file and question:
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+            file.save(filepath)
 
-                # Load and split
-                from langchain_community.document_loaders import PyMuPDFLoader
-                if filename.endswith(".pdf"):
-                    loader = PyMuPDFLoader(filepath)
-                else:
-                    loader = TextLoader(filepath)
-                documents = loader.load()
+            # Load and split
+            loader = TextLoader(filepath)
+            documents = loader.load()
+            splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+            docs = splitter.split_documents(documents)
 
-                splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-                docs = splitter.split_documents(documents)
+            # Vector DB
+            vectordb = Chroma.from_documents(docs, embedding, persist_directory=CHROMA_DB_DIR)
 
-                # Vector DB
-                vectordb = Chroma.from_documents(docs, embedding, persist_directory=None)
+            # Gemini LLM
+            llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
 
-                # Gemini LLM
-                llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
-
-                # RAG
-                qa = RetrievalQA.from_chain_type(llm=llm, retriever=vectordb.as_retriever())
-                answer = qa.run(question)
-
-        except Exception as e:
-            print("Error:", e)  # <-- this will appear in Render logs
-            answer = "An error occurred. Check the logs."
+            # RAG
+            qa = RetrievalQA.from_chain_type(llm=llm, retriever=vectordb.as_retriever())
+            answer = qa.run(question)
 
     return render_template_string(HTML_TEMPLATE, answer=answer)
 
-
 if __name__ == "__main__":
-    app.run()
+    app.run(debug=True)
